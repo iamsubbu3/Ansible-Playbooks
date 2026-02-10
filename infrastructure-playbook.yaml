@@ -2,6 +2,7 @@
 # ==============================================================================
 # LAYER 1: INFRASTRUCTURE & COMMON TOOLS
 # ==============================================================================
+
 - name: Layer 1 - Common Infrastructure Setup
   hosts: all
   become: true
@@ -10,6 +11,7 @@
     docker_keyring: /etc/apt/keyrings/docker.gpg
 
   tasks:
+
     - name: Install system prerequisites
       apt:
         name:
@@ -25,37 +27,21 @@
         state: present
         update_cache: yes
 
-    # AWS CLI v2 (official)
-    - name: Install AWS CLI v2
-      shell: |
-        set -e
-        if ! command -v aws >/dev/null; then
-          curl -s https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip
-          unzip -q /tmp/awscliv2.zip -d /tmp
-          /tmp/aws/install --update
-        fi
-      args:
-        creates: /usr/local/bin/aws
-
-    - name: Ensure keyrings directory
+    - name: Ensure keyrings directory exists
       file:
         path: /etc/apt/keyrings
         state: directory
         mode: "0755"
 
-    # Docker (official repo)
-    - name: Download Docker GPG key
-      get_url:
-        url: https://download.docker.com/linux/ubuntu/gpg
-        dest: "{{ docker_keyring }}"
-        mode: "0644"
+    - name: Install Docker GPG key
+      shell: |
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o {{ docker_keyring }}
+      args:
+        creates: "{{ docker_keyring }}"
 
     - name: Add Docker repository
       apt_repository:
-        repo: >
-          deb [arch=amd64 signed-by={{ docker_keyring }}]
-          https://download.docker.com/linux/ubuntu
-          {{ ansible_distribution_release }} stable
+        repo: "deb [arch=amd64 signed-by={{ docker_keyring }}] https://download.docker.com/linux/ubuntu {{ ansible_facts['distribution_release'] }} stable"
         filename: docker
         state: present
         update_cache: yes
@@ -75,7 +61,25 @@
         state: started
         enabled: yes
 
-    # kubectl
+    - name: Add remote user to docker group on all hosts
+      user:
+        name: "{{ ansible_user }}"
+        groups: docker
+        append: yes
+
+    - name: Reset SSH connection to apply docker group
+      meta: reset_connection
+
+    - name: Install AWS CLI v2
+      shell: |
+        if ! command -v aws >/dev/null; then
+          curl -s https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip
+          unzip -q /tmp/awscliv2.zip -d /tmp
+          /tmp/aws/install --update
+        fi
+      args:
+        creates: /usr/local/bin/aws
+
     - name: Get latest kubectl version
       shell: curl -L -s https://dl.k8s.io/release/stable.txt
       register: kubectl_version
@@ -90,12 +94,13 @@
 # ==============================================================================
 # LAYER 2: CI/CD & SECURITY
 # ==============================================================================
+
 - name: Layer 2 - Jenkins, SonarQube & Security
-  hosts: jenkins
+  hosts: jenkins1
   become: true
 
   vars:
-    jenkins_keyring: /etc/apt/keyrings/jenkins-keyring.asc
+    jenkins_keyring: /etc/apt/keyrings/jenkins-keyring.gpg
     trivy_keyring: /etc/apt/keyrings/trivy.gpg
 
   handlers:
@@ -105,6 +110,7 @@
         state: restarted
 
   tasks:
+
     - name: Tune vm.max_map_count for SonarQube
       sysctl:
         name: vm.max_map_count
@@ -112,12 +118,11 @@
         state: present
         reload: yes
 
-    # Jenkins (2026 key)
-    - name: Download Jenkins 2026 GPG key
-      get_url:
-        url: https://pkg.jenkins.io/debian-stable/jenkins.io-2026.key
-        dest: "{{ jenkins_keyring }}"
-        mode: "0644"
+    - name: Install Jenkins GPG key
+      shell: |
+        curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2026.key | gpg --dearmor -o {{ jenkins_keyring }}
+      args:
+        creates: "{{ jenkins_keyring }}"
 
     - name: Add Jenkins repository
       apt_repository:
@@ -132,36 +137,51 @@
           - openjdk-21-jdk
           - jenkins
         state: present
+        update_cache: yes
 
-    - name: Enable Jenkins
+    - name: Detect JAVA_HOME path
+      shell: readlink -f $(which java) | sed "s:/bin/java::"
+      register: java_home
+      changed_when: false
+
+    - name: Set JAVA_HOME globally
+      lineinfile:
+        path: /etc/environment
+        regexp: '^JAVA_HOME='
+        line: "JAVA_HOME={{ java_home.stdout }}"
+        create: yes
+
+    - name: Configure JAVA_HOME in Jenkins defaults
+      lineinfile:
+        path: /etc/default/jenkins
+        regexp: '^JAVA_HOME='
+        line: "JAVA_HOME={{ java_home.stdout }}"
+        create: yes
+      notify: restart jenkins
+
+    - name: Reset failed Jenkins state (if any)
+      shell: systemctl reset-failed jenkins || true
+      changed_when: false
+
+    - name: Reload systemd daemon
+      systemd:
+        daemon_reload: yes
+
+    - name: Ensure Jenkins started
       service:
         name: jenkins
         state: started
         enabled: yes
 
-    - name: Add users to docker group
-      user:
-        name: "{{ item }}"
-        groups: docker
-        append: yes
-      loop:
-        - jenkins
-        - "{{ ansible_user }}"
-      notify: restart jenkins
-
-    # Trivy
-    - name: Download Trivy GPG key
-      get_url:
-        url: https://aquasecurity.github.io/trivy-repo/deb/public.key
-        dest: "{{ trivy_keyring }}"
-        mode: "0644"
+    - name: Install Trivy GPG key
+      shell: |
+        curl -fsSL https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor -o {{ trivy_keyring }}
+      args:
+        creates: "{{ trivy_keyring }}"
 
     - name: Add Trivy repository
       apt_repository:
-        repo: >
-          deb [signed-by={{ trivy_keyring }}]
-          https://aquasecurity.github.io/trivy-repo/deb
-          {{ ansible_distribution_release }} main
+        repo: "deb [signed-by={{ trivy_keyring }}] https://aquasecurity.github.io/trivy-repo/deb {{ ansible_facts['distribution_release'] }} main"
         filename: trivy
         state: present
         update_cache: yes
@@ -171,7 +191,6 @@
         name: trivy
         state: present
 
-    # SonarQube & Nexus
     - name: Create Docker volumes
       community.docker.docker_volume:
         name: "{{ item }}"
@@ -185,6 +204,7 @@
       community.docker.docker_container:
         name: sonarqube
         image: sonarqube:lts-community
+        state: started
         restart_policy: always
         published_ports:
           - "9000:9000"
@@ -197,6 +217,7 @@
       community.docker.docker_container:
         name: nexus
         image: sonatype/nexus3
+        state: started
         restart_policy: always
         published_ports:
           - "8081:8081"
@@ -206,12 +227,32 @@
 # ==============================================================================
 # LAYER 3: K8S MONITORING, LOGGING & GITOPS
 # ==============================================================================
+
 - name: Layer 3 - Monitoring, Logging & GitOps
-  hosts: k8s-cluster
+  hosts: k8s-cluster1
   become: true
 
+  vars:
+    eks_region: us-east-1
+    eks_cluster_name: subbu-cluster
+
   tasks:
-    - name: Add Helm repositories
+
+    - name: Configure kubeconfig for EKS
+      shell: |
+        aws eks update-kubeconfig --region {{ eks_region }} --name {{ eks_cluster_name }}
+      args:
+        creates: "/home/{{ ansible_user }}/.kube/config"
+
+    - name: Ensure Helm is installed
+      shell: |
+        if ! command -v helm >/dev/null; then
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+        fi
+      args:
+        creates: /usr/local/bin/helm
+
+    - name: Add Helm repos
       shell: |
         helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
         helm repo add grafana https://grafana.github.io/helm-charts
@@ -219,13 +260,14 @@
         helm repo update
       changed_when: false
 
-    - name: Create namespaces
-      shell: |
-        kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
-        kubectl create namespace logging --dry-run=client -o yaml | kubectl apply -f -
+    - name: Ensure monitoring namespace exists
+      shell: kubectl get ns monitoring || kubectl create ns monitoring
       changed_when: false
 
-    # Prometheus + Grafana (LoadBalancer)
+    - name: Ensure logging namespace exists
+      shell: kubectl get ns logging || kubectl create ns logging
+      changed_when: false
+
     - name: Install Prometheus & Grafana
       shell: |
         helm upgrade --install kube-prometheus prometheus-community/kube-prometheus-stack \
@@ -233,7 +275,6 @@
           --set grafana.service.type=LoadBalancer \
           --set prometheus.service.type=LoadBalancer
 
-    # Elasticsearch
     - name: Install Elasticsearch
       shell: |
         helm upgrade --install elasticsearch elastic/elasticsearch \
@@ -241,21 +282,18 @@
           --set discovery.type=single-node \
           --set persistence.enabled=false
 
-    # Kibana (LoadBalancer)
     - name: Install Kibana
       shell: |
         helm upgrade --install kibana elastic/kibana \
           --namespace logging \
           --set service.type=LoadBalancer
 
-    # Logstash
     - name: Install Logstash
       shell: |
         helm upgrade --install logstash elastic/logstash \
           --namespace logging \
           --set persistence.enabled=false
 
-    # Filebeat
     - name: Install Filebeat
       shell: |
         helm upgrade --install filebeat elastic/filebeat \
@@ -263,7 +301,6 @@
           --set daemonset.enabled=true \
           --set deployment.enabled=false
 
-    # ArgoCD CLI
     - name: Install ArgoCD CLI
       get_url:
         url: https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
