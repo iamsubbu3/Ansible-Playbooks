@@ -12,6 +12,9 @@
 
   tasks:
 
+    # ------------------------------------------------
+    # Base Packages
+    # ------------------------------------------------
     - name: Install system prerequisites
       apt:
         name:
@@ -33,6 +36,9 @@
         state: directory
         mode: "0755"
 
+    # ------------------------------------------------
+    # Docker Installation
+    # ------------------------------------------------
     - name: Install Docker GPG key
       shell: |
         curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o {{ docker_keyring }}
@@ -70,6 +76,9 @@
     - name: Reset SSH connection to apply docker group
       meta: reset_connection
 
+    # ------------------------------------------------
+    # AWS CLI + kubectl
+    # ------------------------------------------------
     - name: Install AWS CLI v2
       shell: |
         if ! command -v aws >/dev/null; then
@@ -111,6 +120,9 @@
 
   tasks:
 
+    # ------------------------------------------------
+    # Kernel tuning
+    # ------------------------------------------------
     - name: Tune vm.max_map_count for SonarQube
       sysctl:
         name: vm.max_map_count
@@ -118,6 +130,9 @@
         state: present
         reload: yes
 
+    # ------------------------------------------------
+    # Jenkins Installation
+    # ------------------------------------------------
     - name: Install Jenkins GPG key
       shell: |
         curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2026.key | gpg --dearmor -o {{ jenkins_keyring }}
@@ -173,6 +188,29 @@
         state: started
         enabled: yes
 
+    # ------------------------------------------------
+    # Docker permissions
+    # ------------------------------------------------
+    - name: Ensure docker group exists
+      group:
+        name: docker
+        state: present
+
+    - name: Add Jenkins user to docker group
+      user:
+        name: jenkins
+        groups: docker
+        append: yes
+      notify: restart jenkins
+
+    - name: Wait for Docker socket
+      wait_for:
+        path: /var/run/docker.sock
+        timeout: 30
+
+    # ------------------------------------------------
+    # Trivy Installation
+    # ------------------------------------------------
     - name: Install Trivy GPG key
       shell: |
         curl -fsSL https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor -o {{ trivy_keyring }}
@@ -191,6 +229,9 @@
         name: trivy
         state: present
 
+    # ------------------------------------------------
+    # Docker Volumes
+    # ------------------------------------------------
     - name: Create Docker volumes
       community.docker.docker_volume:
         name: "{{ item }}"
@@ -200,6 +241,9 @@
         - sonarqube_logs
         - nexus_data
 
+    # ------------------------------------------------
+    # SonarQube + Nexus
+    # ------------------------------------------------
     - name: Deploy SonarQube
       community.docker.docker_container:
         name: sonarqube
@@ -229,7 +273,7 @@
 # ==============================================================================
 
 - name: Layer 3 - Monitoring, Logging & GitOps
-  hosts: k8s-cluster1
+  hosts: k8s_cluster1
   become: true
 
   vars:
