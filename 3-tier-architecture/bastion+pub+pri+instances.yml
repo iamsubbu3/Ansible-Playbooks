@@ -57,7 +57,6 @@
         vpc_id: "{{ vpcid }}"
         region: "{{ region }}"
         rules:
-          # SSH from Bastion SG
           - proto: tcp
             from_port: 22
             to_port: 22
@@ -81,7 +80,7 @@
 
     # ================= BASTION HOST =================
 
-    - name: Create Bastion Host
+    - name: Ensure Bastion Host
       amazon.aws.ec2_instance:
         name: Bastion_host
         key_name: "{{ keyName }}"
@@ -92,17 +91,24 @@
         security_group: Bastion-host-sg
         network:
           assign_public_ip: true
+        state: running
+        exact_count: 1
+        filters:
+          "tag:Name": Bastion_host
+          "instance-state-name": ["pending","running","stopping","stopped"]
         wait: yes
         tags:
+          Name: Bastion_host
+          Tier: Bastion
           Project: Vprofile
           Owner: DevOpsTeam
       register: bastionHost_out
 
     # ================= PRIVATE APP INSTANCE 1 =================
 
-    - name: Create Private App Instance in privsub1
+    - name: Ensure Private App Instance 1
       amazon.aws.ec2_instance:
-        name: AppInstance
+        name: AppInstance1
         key_name: "{{ keyName }}"
         region: "{{ region }}"
         instance_type: "{{ instanceType }}"
@@ -111,18 +117,24 @@
         security_group: App-tier-sg
         network:
           assign_public_ip: false
+        state: running
+        exact_count: 1
+        filters:
+          "tag:Name": AppInstance1
+          "instance-state-name": ["pending","running","stopping","stopped"]
         wait: yes
         tags:
+          Name: AppInstance1
           Tier: App
           Project: Vprofile
           Owner: DevOpsTeam
-      register: privsub1Instance_out
+      register: app1_out
 
     # ================= PRIVATE APP INSTANCE 2 =================
 
-    - name: Create Private App Instance in privsub3
+    - name: Ensure Private App Instance 2
       amazon.aws.ec2_instance:
-        name: DBInstance
+        name: AppInstance2
         key_name: "{{ keyName }}"
         region: "{{ region }}"
         instance_type: "{{ instanceType }}"
@@ -131,9 +143,15 @@
         security_group: App-tier-sg
         network:
           assign_public_ip: false
+        state: running
+        exact_count: 1
+        filters:
+          "tag:Name": AppInstance2
+          "instance-state-name": ["pending","running","stopping","stopped"]
         wait: yes
         tags:
+          Name: AppInstance2
           Tier: App
           Project: Vprofile
           Owner: DevOpsTeam
-      register: privsub3Instance_out
+      register: app2_out

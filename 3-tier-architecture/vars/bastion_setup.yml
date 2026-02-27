@@ -1,4 +1,4 @@
-bastion_ami: ami-0beaa649c482330f7
+bastion_ami: ami-06e3c045d79fd65d9
 region: us-east-2
 MYIP: "49.206.129.251/32"
 keyName: vprofile-key
